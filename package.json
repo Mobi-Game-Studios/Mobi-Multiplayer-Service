@@ -8,6 +8,9 @@
   },
   "author": "Temporary Games",
   "license": "MIT",
+  "engines": {
+    "node": "18.15.0"
+  },
   "dependencies": {
     "cors": "^2.8.5",
     "crypto": "^1.0.1",
