@@ -2,7 +2,7 @@
   "name": "unity-multiplayer-server",
   "version": "1.0.0",
   "description": "Host a server for local people to play.",
-  "main": "api/index.js",
+  "main": "api-v1/index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
