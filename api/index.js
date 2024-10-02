@@ -16,6 +16,8 @@ const pool = new Pool({
 
 let currentUserId = null;
 let currentServerKey = null;
+let globalPlayerCount = 0;
+let isConnected = false;
 
 const generateRandomString = (length) => {
     const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
@@ -35,13 +37,29 @@ const validateServerKey = async (serverKey) => {
     return result.rows.length > 0;
 };
 
+const checkLoginStatus = () => {
+    if (!currentUserId) {
+        throw { status: 403, message: 'ERROR: Not logged in.', code: 'ERR_NOT_LOGGED_IN' };
+    }
+    if (!currentServerKey || !isConnected) {
+        throw { status: 403, message: 'ERROR: Not connected to a server.', code: 'ERR_NOT_CONNECTED' };
+    }
+};
+
+const checkRoomOwnership = async (roomCode) => {
+    const roomResult = await pool.query('SELECT * FROM rooms WHERE room_code = $1 AND server_key = $2', [roomCode, currentServerKey]);
+    return roomResult.rows.length > 0;
+};
+
 app.get('/api/ping', (req, res) => {
+    checkLoginStatus();
     res.json({ message: 'pong', status: 200 });
 });
 
 app.post('/api/login-custom-id', (req, res) => {
     const { customId } = req.body;
     currentUserId = customId;
+    globalPlayerCount++;
     res.json({ message: `Logged in as ${customId}`, status: 200 });
 });
 
@@ -62,80 +80,76 @@ app.post('/api/connect-server-key', async (req, res) => {
         return res.status(403).json({ error: 'Invalid server key', code: 'ERR_INVALID_SERVER_KEY', status: 403 });
     }
     currentServerKey = serverKey;
+    isConnected = true;
     res.json({ message: `Connected to server key: ${serverKey}`, status: 200 });
 });
 
 app.post('/api/create-room', async (req, res) => {
-    if (!currentServerKey) {
-        return res.status(403).json({ error: 'ERROR: Not connected to a server.', code: 'ERR_NOT_CONNECTED', status: 403 });
-    }
+    checkLoginStatus();
     const isValidKey = await validateServerKey(currentServerKey);
     if (!isValidKey) {
         return res.status(403).json({ error: 'Invalid server key', code: 'ERR_INVALID_SERVER_KEY', status: 403 });
     }
     const { code } = req.body;
     const roomCode = code || Math.floor(1000 + Math.random() * 9000).toString();
-    try {
-        const result = await pool.query('INSERT INTO rooms (code, server_id) VALUES ($1, $2) RETURNING *', [roomCode, currentServerKey]);
-        res.status(201).json({ message: result.rows[0], status: 201 });
-    } catch (err) {
-        res.status(500).json({ error: 'Error creating room', code: 'ERR_CREATE_ROOM', status: 500 });
-    }
+    await pool.query('INSERT INTO rooms (room_code, server_key) VALUES ($1, $2)', [roomCode, currentServerKey]);
+    res.json({ message: `Room created: ${roomCode}`, status: 200 });
 });
 
 app.post('/api/join-room', async (req, res) => {
-    if (!currentUserId) {
-        return res.status(403).json({ error: 'ERROR: Not logged in.', code: 'ERR_NOT_LOGGED_IN', status: 403 });
-    }
-    if (!currentServerKey) {
-        return res.status(403).json({ error: 'ERROR: Not connected to a server.', code: 'ERR_NOT_CONNECTED', status: 403 });
-    }
-    const isValidKey = await validateServerKey(currentServerKey);
-    if (!isValidKey) {
-        return res.status(403).json({ error: 'Invalid server key', code: 'ERR_INVALID_SERVER_KEY', status: 403 });
-    }
+    checkLoginStatus();
     const { roomCode } = req.body;
-    try {
-        const result = await pool.query('SELECT * FROM rooms WHERE code = $1', [roomCode]);
-        if (result.rows.length === 0) {
-            return res.status(404).json({ error: 'Room not found', code: 'ERR_ROOM_NOT_FOUND', status: 404 });
-        }
-        if (result.rows[0].server_id !== currentServerKey) {
-            return res.status(500).json({ error: 'Error joining room', code: 'ERR_INCORRECT_SKEY', status: 500 });
-        }
-        await pool.query('INSERT INTO room_users (room_id, user_name) VALUES ($1, $2)', [result.rows[0].id, currentUserId]);
-        res.status(200).json({ message: `Joined room ${roomCode}`, status: 200 });
-    } catch (err) {
-        res.status(500).json({ error: 'Error joining room', code: 'ERR_JOIN_ROOM', status: 500 });
+    const roomResult = await pool.query('SELECT * FROM rooms WHERE room_code = $1', [roomCode]);
+    if (roomResult.rows.length === 0) {
+        return res.status(404).json({ error: 'Room does not exist.', code: 'ERR_ROOM_NOT_FOUND', status: 404 });
     }
+    const room = roomResult.rows[0];
+    if (room.server_key !== currentServerKey) {
+        return res.status(500).json({ error: 'Error joining room', code: 'ERR_INCORRECT_SKEY', status: 500 });
+    }
+    res.json({ message: `Joined room: ${roomCode}`, status: 200 });
 });
 
 app.post('/api/leave-room', async (req, res) => {
-    if (!currentUserId) {
-        return res.status(403).json({ error: 'ERROR: Not logged in.', code: 'ERR_NOT_LOGGED_IN', status: 403 });
-    }
-    if (!currentServerKey) {
-        return res.status(403).json({ error: 'ERROR: Not connected to a server.', code: 'ERR_NOT_CONNECTED', status: 403 });
-    }
-    const isValidKey = await validateServerKey(currentServerKey);
-    if (!isValidKey) {
-        return res.status(403).json({ error: 'Invalid server key', code: 'ERR_INVALID_SERVER_KEY', status: 403 });
-    }
+    checkLoginStatus();
     const { roomCode } = req.body;
-    try {
-        const result = await pool.query('SELECT * FROM rooms WHERE code = $1', [roomCode]);
-        if (result.rows.length === 0) {
-            return res.status(404).json({ error: 'Room not found', code: 'ERR_ROOM_NOT_FOUND', status: 404 });
-        }
-        await pool.query('DELETE FROM room_users WHERE room_id = $1 AND user_name = $2', [result.rows[0].id, currentUserId]);
-        res.status(200).json({ message: `Left room ${roomCode}`, status: 200 });
-    } catch (err) {
-        res.status(500).json({ error: 'Error leaving room', code: 'ERR_LEAVE_ROOM', status: 500 });
+    const ownsRoom = await checkRoomOwnership(roomCode);
+    if (!ownsRoom) {
+        return res.status(403).json({ error: 'ERROR: Cannot leave a room that you are not in.', code: 'ERR_NOT_IN_ROOM', status: 403 });
     }
+    await pool.query('DELETE FROM rooms WHERE room_code = $1 AND server_key = $2', [roomCode, currentServerKey]);
+    res.json({ message: `Left room: ${roomCode}`, status: 200 });
 });
 
-const PORT = process.env.PORT || 3000;
+app.get('/api/get-server-info', (req, res) => {
+    checkLoginStatus();
+    res.json({ serverKey: currentServerKey, status: 200 });
+});
 
+app.get('/api/get-room-info', async (req, res) => {
+    checkLoginStatus();
+    const roomResult = await pool.query('SELECT room_code FROM rooms WHERE server_key = $1', [currentServerKey]);
+    res.json({ rooms: roomResult.rows.map(row => row.room_code), status: 200 });
+});
+
+app.post('/api/disconnect', (req, res) => {
+    if (!isConnected) {
+        return res.status(400).json({ error: 'Not currently connected.', code: 'ERR_NOT_CONNECTED', status: 400 });
+    }
+    isConnected = false;
+    res.json({ message: 'Disconnected from server.', status: 200 });
+});
+
+app.post('/api/connect', (req, res) => {
+    if (isConnected) {
+        return res.status(400).json({ error: 'Already connected.', code: 'ERR_ALREADY_CONNECTED', status: 400 });
+    }
+    isConnected = true;
+    res.json({ message: 'Connected to server.', status: 200 });
+});
+
+// Start server
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
+    console.log(`Server running on port ${PORT}`);
 });
