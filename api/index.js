@@ -65,10 +65,16 @@ app.post('/api/login-custom-id', (req, res) => {
 
 app.post('/api/create-server-key', async (req, res) => {
     const serverKey = generateServerKey();
-    await pool.query('INSERT INTO servers (server_key) VALUES ($1)', [serverKey]);
-    currentServerKey = serverKey;
-    res.json({ message: `Server key created: ${serverKey}`, status: 200 });
+    try {
+        await pool.query('INSERT INTO servers (server_key) VALUES ($1)', [serverKey]);
+        currentServerKey = serverKey;
+        res.json({ message: `Server key created: ${serverKey}`, status: 200 });
+    } catch (error) {
+        console.error('Error creating server key:', error);
+        res.status(500).json({ error: 'Internal server error', code: 'ERR_INTERNAL_SERVER', status: 500 });
+    }
 });
+
 
 app.post('/api/connect-server-key', async (req, res) => {
     const { serverKey } = req.body;
