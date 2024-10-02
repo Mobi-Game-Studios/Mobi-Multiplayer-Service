@@ -71,7 +71,7 @@ app.post('/api/create-server-key', async (req, res) => {
         res.json({ message: `Server key created: ${serverKey}`, status: 200 });
     } catch (error) {
         console.error('Error creating server key:', error);
-        res.status(500).json({ error: 'Internal server error', code: 'ERR_INTERNAL_SERVER', status: 500 });
+        res.status(500).json({ error: 'Internal server error', cause: error, code: 'ERR_INTERNAL_SERVER', status: 500 });
     }
 });
 
