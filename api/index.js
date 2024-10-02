@@ -1,30 +1,14 @@
-import express from 'express';
-import { Postgres } from '@vercel/postgres'; // Make sure to install this package
-import cors from 'cors';
+require('dotenv').config();
+const express = require('express');
+const faunadb = require('faunadb');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
-const pool = new Postgres(process.env.POSTGRES_URL);
+const q = faunadb.query;
+const client = new faunadb.Client({ secret: process.env.FAUNA_SERVER_KEY });
 
 let currentUserId = null;
 let currentServerKey = null;
 let isConnected = false;
-
-app.use(cors());
-app.use(express.json());
-
-const generateRandomString = (length) => {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-    let result = '';
-    for (let i = 0; i < length; i++) {
-        result += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    return result;
-};
-
-const generateServerKey = () => {
-    return `${generateRandomString(32)}-${generateRandomString(32)}-${generateRandomString(32)}`;
-};
 
 const checkLoginStatus = () => {
     if (!currentUserId) {
@@ -38,93 +22,87 @@ const checkLoginStatus = () => {
     }
 };
 
-app.get('/api/testing/server', (req, res) => {
+app.get('/api/ping', (req, res) => {
     checkLoginStatus();
     res.json({ message: 'pong', status: 200 });
 });
 
-app.get('/api/testing/database', async (req, res) => {
-    try {
-        const { rows } = await pool.sql`SELECT NOW()`;
-        res.json({ status: 'success', time: rows[0].now });
-    } catch (err) {
-        res.status(500).json({ error: 'Database connection failed', details: err });
+app.post('/api/login-custom-id', (req, res) => {
+    const { userId } = req.body;
+    if (!userId) {
+        return res.status(400).json({ error: 'User ID is required' });
     }
-});
-
-app.get('/api/login-custom-id', (req, res) => {
-    const { id } = req.query;
-    if (!id) {
-        return res.status(400).json({ error: 'No ID provided', status: 400 });
-    }
-    currentUserId = id;
+    currentUserId = userId;
     res.json({ message: 'Logged in successfully', status: 200 });
 });
 
-app.get('/api/create-server-key', async (req, res) => {
+app.post('/api/create-server-key', async (req, res) => {
     try {
-        const serverKey = generateServerKey();
-        await pool.sql`INSERT INTO servers (server_key) VALUES (${serverKey})`;
+        const serverKey = [...Array(3)].map(() => 
+            Math.random().toString(36).slice(2, 34).replace(/(.{32})/, '$1-')
+        ).join('').slice(0, -1);
+        
+        await client.query(q.Create(q.Collection('servers'), { data: { key: serverKey } }));
         currentServerKey = serverKey;
         res.json({ message: 'Server key created', serverKey, status: 200 });
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Failed to create server key', details: err });
+    } catch (error) {
+        console.error('Error creating server key:', error);
+        res.status(500).json({ error: 'Error creating server key', details: error });
     }
 });
 
-app.get('/api/connect', (req, res) => {
-    checkLoginStatus();
-    isConnected = true;
-    res.json({ message: 'Connected to server', status: 200 });
-});
-
-app.get('/api/disconnect', (req, res) => {
-    checkLoginStatus();
-    isConnected = false;
-    res.json({ message: 'Disconnected from server', status: 200 });
-});
-
-app.get('/api/join-room', async (req, res) => {
-    const { roomCode } = req.query;
-    checkLoginStatus();
-    const { rows } = await pool.sql`SELECT * FROM rooms WHERE room_code = ${roomCode} AND server_key = ${currentServerKey}`;
-    if (rows.length === 0) {
-        return res.status(500).json({ error: 'Error joining room', code: 'ERR_INCORRECT_SKEY', status: 500 });
-    }
-    res.json({ message: 'Joined room successfully', room: rows[0], status: 200 });
-});
-
-app.get('/api/leave-room', async (req, res) => {
-    checkLoginStatus();
-    // Implement leave room logic
-    res.json({ message: 'Left room successfully', status: 200 });
-});
-
-app.get('/api/create-room', async (req, res) => {
-    checkLoginStatus();
-    const { code } = req.query;
-    const roomCode = code || generateRandomString(4);
+app.post('/api/connect-server-key', async (req, res) => {
+    const { serverKey } = req.body;
     try {
-        await pool.sql`INSERT INTO rooms (room_code, server_key) VALUES (${roomCode}, ${currentServerKey})`;
-        res.json({ message: 'Room created', roomCode, status: 200 });
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Failed to create room', details: err });
+        const server = await client.query(q.Get(q.Match(q.Index('server_by_key'), serverKey)));
+        currentServerKey = serverKey;
+        res.json({ message: 'Connected to server', server, status: 200 });
+    } catch (error) {
+        console.error('Error connecting to server:', error);
+        res.status(500).json({ error: 'Error connecting to server', details: error });
     }
 });
 
-app.get('/api/get-server-info', async (req, res) => {
+app.post('/api/create-room', async (req, res) => {
+    checkLoginStatus();
+    const { code } = req.body;
+    try {
+        const roomCode = code || Math.random().toString(36).slice(2, 6).toUpperCase();
+        await client.query(q.Create(q.Collection('rooms'), { data: { code: roomCode, serverKey: currentServerKey } }));
+        res.json({ message: 'Room created', roomCode, status: 200 });
+    } catch (error) {
+        console.error('Error creating room:', error);
+        res.status(500).json({ error: 'Error creating room', details: error });
+    }
+});
+
+app.get('/api/get-server-info', (req, res) => {
     checkLoginStatus();
     res.json({ serverKey: currentServerKey, status: 200 });
 });
 
 app.get('/api/get-room-info', async (req, res) => {
     checkLoginStatus();
-    const { rows } = await pool.sql`SELECT room_code FROM rooms WHERE server_key = ${currentServerKey}`;
-    res.json({ roomCode: rows.length ? rows[0].room_code : null, status: 200 });
+    try {
+        const roomInfo = await client.query(q.Paginate(q.Documents(q.Collection('rooms'))));
+        res.json({ roomInfo, status: 200 });
+    } catch (error) {
+        console.error('Error fetching room info:', error);
+        res.status(500).json({ error: 'Error fetching room info', details: error });
+    }
 });
 
+app.post('/api/disconnect', (req, res) => {
+    isConnected = false;
+    res.json({ message: 'Disconnected', status: 200 });
+});
+
+app.post('/api/connect', (req, res) => {
+    isConnected = true;
+    res.json({ message: 'Connected', status: 200 });
+});
+
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
 });
