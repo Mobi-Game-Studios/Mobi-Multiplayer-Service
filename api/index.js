@@ -75,6 +75,19 @@ app.post('/api/create-server-key', async (req, res) => {
     }
 });
 
+app.any('/api/test-db-connection', async (req, res) => {
+    try {
+        const client = await pool.connect();
+        const result = await client.query('SELECT NOW()');
+        client.release();
+        res.json({ status: 'success', time: result.rows[0].now });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Database connection failed', details: err });
+    }
+});
+
+
 
 app.post('/api/connect-server-key', async (req, res) => {
     const { serverKey } = req.body;
