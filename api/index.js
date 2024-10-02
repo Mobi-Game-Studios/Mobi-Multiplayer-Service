@@ -1,10 +1,15 @@
-require('dotenv').config();
 const express = require('express');
-const faunadb = require('faunadb');
+const { createClient } = require('@supabase/supabase-js');
+const cors = require('cors');
 
 const app = express();
-const q = faunadb.query;
-const client = new faunadb.Client({ secret: process.env.FAUNA_SERVER_KEY });
+app.use(express.json());
+app.use(cors());
+
+// Use environment variables for Supabase configuration
+const supabaseUrl = process.env.CLIENT_URI;
+const supabaseAnonKey = process.env.CLIENT_ANON;
+const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 let currentUserId = null;
 let currentServerKey = null;
@@ -22,58 +27,110 @@ const checkLoginStatus = () => {
     }
 };
 
-app.get('/api/ping', (req, res) => {
-    checkLoginStatus();
-    res.json({ message: 'pong', status: 200 });
+app.post('/api/signup', async (req, res) => {
+    const { email, password } = req.body;
+
+    // Create a new user
+    const { user, error } = await supabase.auth.signUp({
+        email,
+        password,
+    });
+
+    if (error) {
+        return res.status(400).json({ message: 'Signup failed', code: 'ERR_SIGNUP_FAILED', details: error });
+    }
+
+    currentUserId = user.id; // Set the current user ID
+    res.json({ message: 'Signup successful', status: 200 });
 });
 
-app.post('/api/login-custom-id', (req, res) => {
-    const { userId } = req.body;
-    if (!userId) {
-        return res.status(400).json({ error: 'User ID is required' });
+app.post('/api/login-custom-id', async (req, res) => {
+    const { email, password } = req.body;
+    const { user, error } = await supabase.auth.signIn({ email, password });
+    
+    if (error) {
+        return res.status(401).json({ message: 'Login failed', code: 'ERR_LOGIN_FAILED' });
     }
-    currentUserId = userId;
-    res.json({ message: 'Logged in successfully', status: 200 });
+    currentUserId = user.id;
+    res.json({ message: 'Login successful', status: 200 });
+});
+
+app.post('/api/logout', async (req, res) => {
+    const { error } = await supabase.auth.signOut();
+    
+    if (error) {
+        return res.status(400).json({ message: 'Logout failed', code: 'ERR_LOGOUT_FAILED' });
+    }
+    currentUserId = null;
+    isConnected = false;
+    res.json({ message: 'Logout successful', status: 200 });
 });
 
 app.post('/api/create-server-key', async (req, res) => {
-    try {
-        const serverKey = [...Array(3)].map(() => 
-            Math.random().toString(36).slice(2, 34).replace(/(.{32})/, '$1-')
-        ).join('').slice(0, -1);
-        
-        await client.query(q.Create(q.Collection('servers'), { data: { key: serverKey } }));
-        currentServerKey = serverKey;
-        res.json({ message: 'Server key created', serverKey, status: 200 });
-    } catch (error) {
-        console.error('Error creating server key:', error);
-        res.status(500).json({ error: 'Error creating server key', details: error });
+    const serverKey = generateServerKey();
+    const { error } = await supabase
+        .from('servers')
+        .insert([{ key: serverKey }]);
+    
+    if (error) {
+        return res.status(500).json({ message: 'Error creating server key', code: 'ERR_CREATE_SERVER_KEY' });
     }
+    currentServerKey = serverKey;
+    res.json({ message: 'Server key created', serverKey, status: 200 });
 });
 
 app.post('/api/connect-server-key', async (req, res) => {
     const { serverKey } = req.body;
-    try {
-        const server = await client.query(q.Get(q.Match(q.Index('server_by_key'), serverKey)));
-        currentServerKey = serverKey;
-        res.json({ message: 'Connected to server', server, status: 200 });
-    } catch (error) {
-        console.error('Error connecting to server:', error);
-        res.status(500).json({ error: 'Error connecting to server', details: error });
+    const { data, error } = await supabase
+        .from('servers')
+        .select('*')
+        .eq('key', serverKey)
+        .single();
+    
+    if (error || !data) {
+        return res.status(403).json({ message: 'Invalid server key', code: 'ERR_INVALID_SERVER_KEY' });
     }
+    currentServerKey = serverKey;
+    isConnected = true;
+    res.json({ message: 'Connected to server', status: 200 });
 });
 
 app.post('/api/create-room', async (req, res) => {
     checkLoginStatus();
     const { code } = req.body;
-    try {
-        const roomCode = code || Math.random().toString(36).slice(2, 6).toUpperCase();
-        await client.query(q.Create(q.Collection('rooms'), { data: { code: roomCode, serverKey: currentServerKey } }));
-        res.json({ message: 'Room created', roomCode, status: 200 });
-    } catch (error) {
-        console.error('Error creating room:', error);
-        res.status(500).json({ error: 'Error creating room', details: error });
+    const roomCode = code || generateRoomCode();
+    
+    const { error } = await supabase
+        .from('rooms')
+        .insert([{ code: roomCode, server_key: currentServerKey }]);
+    
+    if (error) {
+        return res.status(500).json({ message: 'Error creating room', code: 'ERR_CREATE_ROOM' });
     }
+    res.json({ message: 'Room created', roomCode, status: 200 });
+});
+
+app.post('/api/join-room', async (req, res) => {
+    checkLoginStatus();
+    const { roomCode } = req.body;
+    
+    const { data, error } = await supabase
+        .from('rooms')
+        .select('*')
+        .eq('code', roomCode)
+        .eq('server_key', currentServerKey)
+        .single();
+    
+    if (error || !data) {
+        return res.status(500).json({ error: 'Error joining room', code: 'ERR_INCORRECT_SKEY', status: 500 });
+    }
+    res.json({ message: 'Joined room', status: 200 });
+});
+
+app.post('/api/leave-room', async (req, res) => {
+    checkLoginStatus();
+    // Implement leave room logic here
+    res.json({ message: 'Left room', status: 200 });
 });
 
 app.get('/api/get-server-info', (req, res) => {
@@ -83,26 +140,55 @@ app.get('/api/get-server-info', (req, res) => {
 
 app.get('/api/get-room-info', async (req, res) => {
     checkLoginStatus();
+    const { data, error } = await supabase
+        .from('rooms')
+        .select('code')
+        .eq('server_key', currentServerKey);
+    
+    if (error) {
+        return res.status(500).json({ message: 'Error fetching room info', code: 'ERR_FETCH_ROOM_INFO' });
+    }
+    res.json({ rooms: data, status: 200 });
+});
+
+app.get('/api/testing/server', (req, res) => {
+    checkLoginStatus();
+    res.json({ message: 'pong', status: 200 });
+});
+
+app.get('/api/testing/database', async (req, res) => {
     try {
-        const roomInfo = await client.query(q.Paginate(q.Documents(q.Collection('rooms'))));
-        res.json({ roomInfo, status: 200 });
-    } catch (error) {
-        console.error('Error fetching room info:', error);
-        res.status(500).json({ error: 'Error fetching room info', details: error });
+        const { data, error } = await supabase
+            .from('some_table')
+            .select('*');
+        
+        if (error) {
+            throw new Error(error.message);
+        }
+        res.json({ status: 'success', data });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Database connection failed', details: err });
     }
 });
 
-app.post('/api/disconnect', (req, res) => {
-    isConnected = false;
-    res.json({ message: 'Disconnected', status: 200 });
-});
+const generateRoomCode = () => {
+    return Math.floor(1000 + Math.random() * 9000).toString(); // Generates a 4-digit random room code
+};
 
-app.post('/api/connect', (req, res) => {
-    isConnected = true;
-    res.json({ message: 'Connected', status: 200 });
-});
+const generateServerKey = () => {
+    return `${generateRandomString(32)}-${generateRandomString(32)}-${generateRandomString(32)}`;
+};
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
+const generateRandomString = (length) => {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    let result = '';
+    for (let i = 0; i < length; i++) {
+        result += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return result;
+};
+
+app.listen(3000, () => {
+    console.log('Server running on port 3000');
 });
