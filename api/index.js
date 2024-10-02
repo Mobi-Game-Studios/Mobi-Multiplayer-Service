@@ -75,7 +75,7 @@ app.post('/api/create-server-key', async (req, res) => {
     }
 });
 
-app.any('/api/test-db-connection', async (req, res) => {
+app.get('/api/test-db-connection', async (req, res) => {
     try {
         const client = await pool.connect();
         const result = await client.query('SELECT NOW()');
