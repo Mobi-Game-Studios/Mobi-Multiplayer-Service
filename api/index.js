@@ -4,7 +4,7 @@ import cors from 'cors';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const pool = new Postgres();
+const pool = new Postgres(process.env.POSTGRES_URL);
 
 let currentUserId = null;
 let currentServerKey = null;
@@ -48,7 +48,6 @@ app.get('/api/testing/database', async (req, res) => {
         const { rows } = await pool.sql`SELECT NOW()`;
         res.json({ status: 'success', time: rows[0].now });
     } catch (err) {
-        console.error(err);
         res.status(500).json({ error: 'Database connection failed', details: err });
     }
 });
